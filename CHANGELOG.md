@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.2.6] - 2026-11-10
+
+### Added
+- **标准化 Agent Skill 接入架构 (`skills/pharmrag/SKILL.md`)**：
+  - 参考通用 Agent Skill 规范，提供开箱即用的标准 Skill 描述文件；
+  - 规范多 Agent 平台（Hermes、Claude Code、Codex、OpenCode 等）统一对接协议；
+  - 明晰 CLI 参数规范（`--limit`、`--min-score`、`--only-effective`、`--json`）与 GxP 证据可追溯性合规生成守则。
+
+---
+
 ## [v0.2.5] - 2026-09-23
 
 ### Fixed
