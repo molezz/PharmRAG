@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **标准化 Agent Skill 接入架构 (`skills/pharmrag/SKILL.md`)**：
-  - 参考通用 Agent Skill 规范，提供开箱即用的标准 Skill 描述文件；
-  - 规范多 Agent 平台（Hermes、Claude Code、Codex、OpenCode 等）统一对接协议；
-  - 明晰 CLI 参数规范（`--limit`、`--min-score`、`--only-effective`、`--json`）与 GxP 证据可追溯性合规生成守则。
+  - 参考通用 Agent Skill 规范（灵感借鉴自 [SAG-Wiki](https://github.com/Zleap-AI/SAG-Wiki) 的 Skill 打包与 CLI 交互规范架构），提供开箱即用的标准 Skill 描述文件；
+  - 规范多 Agent 平台（Hermes、Claude Code、Codex、OpenCode 等）统一对接协议与一键软链接方案；
+  - 明晰 CLI 参数规范（`--limit`、`--min-score`、`--only-effective`、`--json`）与 GxP 证据可追溯性合规生成守则；
+  - 引入跨法规证据链（Cross-Regulation Evidence References）演进路线规划，借鉴 SAG2 Multi-Hop 思想规划条款交叉引用图谱。
 
 ---
 

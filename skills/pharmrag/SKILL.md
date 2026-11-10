@@ -8,6 +8,8 @@ tools:
 
 # PharmRAG Agent Skill
 
+> Reference & Design Origin: Standardized Agent Skill specification inspired by [SAG-Wiki](https://github.com/Zleap-AI/SAG-Wiki) and Claude Code / OpenCode skill standards.
+
 Use `pharmrag` to query authoritative pharmaceutical regulations and GxP guidelines with precise clause AST context (`章 > 节 > 条`) and physical PDF page mapping.
 
 ## When to Use

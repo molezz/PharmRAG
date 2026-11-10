@@ -305,7 +305,7 @@ PharmRAG 原生支持标准 MCP 协议，暴露 `search_regulations` 工具。
 
 ### 🤖 Agent Skill 标准化对接 (Claude Code / Hermes / Codex)
 
-PharmRAG 遵循标准的 Agent Skill 规范，仓库内提供了标准描述文件 [`skills/pharmrag/SKILL.md`](skills/pharmrag/SKILL.md)。
+PharmRAG 遵循标准的 Agent Skill 规范（规范化设计参考自 [SAG-Wiki](https://github.com/Zleap-AI/SAG-Wiki) 的 Skill 打包架构），在仓库内提供了开箱即用的标准描述文件 [`skills/pharmrag/SKILL.md`](skills/pharmrag/SKILL.md)。
 
 一键软链接或复制即可供各类 Coding Agent 自动调度：
 
