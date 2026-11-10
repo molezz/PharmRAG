@@ -304,6 +304,53 @@ fn test_fullwidth_toc_and_page_fraction_format() {
     assert_eq!(clauses[1].page_num, Some(2), "Page '2 / 49' should be extracted as page 2");
 }
 
+#[test]
+fn test_cross_regulation_multi_hop_references() {
+    let mut db = Database::open_in_memory().expect("Failed to open memory db");
+    let parser = RegulatoryParser::new();
+
+    // Doc 1: Guideline citing Pharmacopoeia and internal question
+    let text_doc1 = r#"
+第一章 变更管理
+第一条 质粒变更原则
+质粒制备与变更要求见问题 6、（2），检测方法应符合《中国药典》现行版要求，并参照 ICH Q5D 进行细胞库建库。
+"#;
+    let clauses1 = parser.parse("CAR-T药学指导原则", text_doc1);
+    assert!(!clauses1.is_empty());
+    assert!(!clauses1[0].references.is_empty(), "Should extract references from text");
+
+    let has_internal_ref = clauses1[0].references.iter().any(|r| r.ref_type == "internal_clause" && r.target_title.contains("问题6"));
+    let has_chp_ref = clauses1[0].references.iter().any(|r| r.ref_type == "pharmacopoeia" && r.target_title.contains("中国药典"));
+    let has_ich_ref = clauses1[0].references.iter().any(|r| r.ref_type == "international_standard" && r.target_title.contains("ICH"));
+    assert!(has_internal_ref, "Should identify internal question reference");
+    assert!(has_chp_ref, "Should identify Chinese Pharmacopoeia book reference");
+    assert!(has_ich_ref, "Should identify ICH Q5D international standard reference");
+
+    db.save_document("CAR-T药学指导原则", "doc1.md", "hash_doc1", "effective", &clauses1).expect("Save doc1 failed");
+
+    // Doc 2: Target document (中国药典)
+    let text_doc2 = r#"
+通则 1101 无菌检查法
+供试品无菌检查应在B级背景下的A级单向流洁净区中进行。
+"#;
+    let clauses2 = parser.parse("中国药典四部通则", text_doc2);
+    db.save_document("中国药典四部通则", "doc2.md", "hash_doc2", "effective", &clauses2).expect("Save doc2 failed");
+
+    // Execute Search with Multi-Hop expansion
+    let search_results = db.search("质粒变更原则", 5, None).expect("Search failed");
+    assert!(!search_results.is_empty());
+
+    let expanded = db.expand_multi_hop(search_results).expect("Multi-hop expansion failed");
+    assert!(!expanded[0].hop_references.is_empty(), "Should resolve multi-hop graph references");
+
+    let chp_hop = expanded[0].hop_references.iter().find(|h| h.reference.ref_type == "pharmacopoeia");
+    assert!(chp_hop.is_some());
+    let matched_clause = &chp_hop.unwrap().matched_clause;
+    assert!(matched_clause.is_some(), "Multi-hop graph should resolve target 《中国药典》 clause");
+    assert!(matched_clause.as_ref().unwrap().breadcrumb.contains("中国药典四部通则"));
+}
+
+
 
 
 

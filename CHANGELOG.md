@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.2.7] - 2026-11-10
+
+### Added
+- **借鉴 SAG2 Multi-Hop 思想：免模型知识图谱法条交叉多跳检索（Cross-Regulation Multi-Hop Retrieval）**：
+  - **AST 语法期关系抽取**：通过 `RegulatoryParser` 正则语法树自动识别三大类型法规引用并入库建图：
+    1. 《书名号》法规与指导原则（如《中国药典》现行版、《药品生产质量管理规范》）；
+    2. 指导原则内部问答与条款引用（如“见问题 6、（2）”、“参考问题 1、3”、“参见第十条”）；
+    3. 国际标准与行业技术代号（如 ICH Q5D、ICH Q6B、USP <1046>、21 CFR Part 211）。
+  - **嵌入式关系图谱表 (`clause_references`)**：在 SQLite 中自动维护 `source_clause_id` 到目标法规/条款的图谱边与索引，入库与多跳查询完全零模型开销（Embedding-Free）。
+  - **多跳推导引擎 (`expand_multi_hop`)**：单次检索可自动展开 Hop-1 引用目标条款证据链，若被引条款在本地库存在，直接挂载目标条款的面包屑、页码与内容。
+  - **CLI / HTTP / MCP 全面透出**：
+    - CLI 新增 `--hop` 开关，在终端格式化输出关联法条与 `[Multi-Hop 关联证据]` 链；
+    - HTTP REST API `search_handler` 支持 `?hop=true`；
+    - MCP Server 工具 `search_regulations` 原生默认启用多跳并返回完整证据链上下文。
+
+---
+
 ## [v0.2.6] - 2026-11-10
 
 ### Added

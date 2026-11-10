@@ -82,6 +82,29 @@ impl Database {
         let _ = self.conn.execute("ALTER TABLE documents ADD COLUMN status TEXT DEFAULT 'effective'", []);
         let _ = self.conn.execute("ALTER TABLE clauses ADD COLUMN status TEXT DEFAULT 'effective'", []);
 
+        // Cross references table (Graph edges between clauses and target regulations/clauses)
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS clause_references (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_clause_id INTEGER NOT NULL,
+                source_doc_id INTEGER NOT NULL,
+                ref_type TEXT NOT NULL,
+                target_title TEXT NOT NULL,
+                raw_mention TEXT NOT NULL,
+                FOREIGN KEY(source_clause_id) REFERENCES clauses(id) ON DELETE CASCADE,
+                FOREIGN KEY(source_doc_id) REFERENCES documents(id) ON DELETE CASCADE
+            );",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_refs_target_title ON clause_references(target_title);",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_refs_source_clause ON clause_references(source_clause_id);",
+            [],
+        )?;
+
         // FTS5 Trigram virtual table for full-text search
         self.conn.execute(
             "CREATE VIRTUAL TABLE IF NOT EXISTS clauses_fts USING fts5(
@@ -165,6 +188,16 @@ impl Database {
                     clause.status,
                 ],
             )?;
+            let clause_id = tx.last_insert_rowid();
+
+            for r in &clause.references {
+                tx.execute(
+                    "INSERT INTO clause_references (
+                        source_clause_id, source_doc_id, ref_type, target_title, raw_mention
+                    ) VALUES (?, ?, ?, ?, ?)",
+                    params![clause_id, doc_id, r.ref_type, r.target_title, r.raw_mention],
+                )?;
+            }
         }
 
         tx.commit()?;
@@ -223,6 +256,7 @@ impl Database {
                         content: row.get(8)?,
                         table_data: row.get(9)?,
                         status: row.get(10)?,
+                        references: Vec::new(),
                     },
                     row.get::<_, f64>(11)?,
                 ))
@@ -243,6 +277,7 @@ impl Database {
                         semantic_score: None,
                         fts_score: Some(item.1),
                         rerank_score: None,
+                        hop_references: Vec::new(),
                     });
                 }
             }
@@ -285,6 +320,7 @@ impl Database {
                     content: row.get(8)?,
                     table_data: row.get(9)?,
                     status: row.get(10)?,
+                    references: Vec::new(),
                 })
             };
 
@@ -302,6 +338,7 @@ impl Database {
                     semantic_score: None,
                     fts_score: Some(1.0),
                     rerank_score: None,
+                    hop_references: Vec::new(),
                 });
             }
         }
@@ -395,6 +432,7 @@ impl Database {
                     content: row.get(8)?,
                     table_data: row.get(9)?,
                     status: row.get(10)?,
+                    references: Vec::new(),
                 },
                 sim as f64,
             ))
@@ -444,6 +482,7 @@ impl Database {
             semantic_score: Some(sim),
             fts_score: None,
             rerank_score: None,
+            hop_references: Vec::new(),
         }).collect();
 
         Ok(results)
@@ -531,9 +570,133 @@ impl Database {
             semantic_score,
             fts_score,
             rerank_score: None,
+            hop_references: Vec::new(),
         }).collect();
 
         Ok(results)
+    }
+
+    /// Load references for a clause
+    pub fn get_clause_references(&self, clause_id: i64) -> Result<Vec<crate::parser::ast::ClauseReference>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ref_type, target_title, raw_mention FROM clause_references WHERE source_clause_id = ?"
+        )?;
+        let rows = stmt.query_map(params![clause_id], |row| {
+            Ok(crate::parser::ast::ClauseReference {
+                ref_type: row.get(0)?,
+                target_title: row.get(1)?,
+                raw_mention: row.get(2)?,
+            })
+        })?;
+        let mut refs = Vec::new();
+        for r in rows.flatten() {
+            refs.push(r);
+        }
+        Ok(refs)
+    }
+
+    /// Multi-Hop Knowledge Graph Expansion:
+    /// For a list of search results, inspect their references and resolve target clauses (Hop-1)
+    /// without any runtime LLM or heavy model inference (embedding-free graph traversal).
+    pub fn expand_multi_hop(&self, mut results: Vec<SearchResult>) -> Result<Vec<SearchResult>> {
+        for res in &mut results {
+            let clause_id = match res.clause.id {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // 1. Ensure clause.references is populated
+            if res.clause.references.is_empty() {
+                res.clause.references = self.get_clause_references(clause_id).unwrap_or_default();
+            }
+
+            // 2. For each reference, resolve target in the knowledge graph
+            let mut hops = Vec::new();
+            for r in &res.clause.references {
+                let matched = self.resolve_reference_target(res.clause.doc_id, r);
+                hops.push(crate::parser::ast::HopReferenceTarget {
+                    reference: r.clone(),
+                    matched_clause: matched,
+                });
+            }
+            res.hop_references = hops;
+        }
+        Ok(results)
+    }
+
+    /// Resolve a reference target against the database:
+    /// - For internal_clause (e.g. "问题 6.(2)", "第十条"): searches within same doc_id or across guidelines
+    /// - For pharmacopoeia / guideline: searches documents table by title
+    fn resolve_reference_target(&self, current_doc_id: Option<i64>, r: &crate::parser::ast::ClauseReference) -> Option<Clause> {
+        let target = &r.target_title;
+
+        // Pattern 1: Internal clause / question
+        if r.ref_type == "internal_clause" {
+            if let Some(doc_id) = current_doc_id {
+                // Try finding matching article or breadcrumb in the same document
+                let escaped = escape_like(target);
+                let pattern = format!("%{}%", escaped);
+                let sql = "SELECT id, doc_id, doc_title, chapter, section, article,
+                                  breadcrumb, page_num, content, table_data, status
+                           FROM clauses
+                           WHERE doc_id = ? AND (article LIKE ? ESCAPE '\\' OR breadcrumb LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')
+                           ORDER BY id ASC LIMIT 1";
+                if let Ok(mut stmt) = self.conn.prepare(sql) {
+                    if let Ok(mut rows) = stmt.query(params![doc_id, pattern, pattern, pattern]) {
+                        if let Ok(Some(row)) = rows.next() {
+                            return Some(Clause {
+                                id: row.get(0).ok(),
+                                doc_id: row.get(1).ok(),
+                                doc_title: row.get(2).unwrap_or_default(),
+                                chapter: row.get(3).unwrap_or_default(),
+                                section: row.get(4).unwrap_or_default(),
+                                article: row.get(5).unwrap_or_default(),
+                                breadcrumb: row.get(6).unwrap_or_default(),
+                                page_num: row.get(7).ok(),
+                                content: row.get(8).unwrap_or_default(),
+                                table_data: row.get(9).ok(),
+                                status: row.get(10).unwrap_or_default(),
+                                references: Vec::new(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pattern 2: External guideline or pharmacopoeia title
+        let clean_title = target.trim();
+        let escaped = escape_like(clean_title);
+        let pattern = format!("%{}%", escaped);
+        let sql = "SELECT c.id, c.doc_id, c.doc_title, c.chapter, c.section, c.article,
+                          c.breadcrumb, c.page_num, c.content, c.table_data, c.status
+                   FROM clauses c
+                   JOIN documents d ON d.id = c.doc_id
+                   WHERE (d.title LIKE ? ESCAPE '\\' OR c.doc_title LIKE ? ESCAPE '\\')
+                   ORDER BY CASE c.status WHEN 'effective' THEN 1 WHEN 'trial' THEN 2 WHEN 'draft' THEN 3 ELSE 4 END ASC, c.id ASC
+                   LIMIT 1";
+        if let Ok(mut stmt) = self.conn.prepare(sql) {
+            if let Ok(mut rows) = stmt.query(params![pattern, pattern]) {
+                if let Ok(Some(row)) = rows.next() {
+                    return Some(Clause {
+                        id: row.get(0).ok(),
+                        doc_id: row.get(1).ok(),
+                        doc_title: row.get(2).unwrap_or_default(),
+                        chapter: row.get(3).unwrap_or_default(),
+                        section: row.get(4).unwrap_or_default(),
+                        article: row.get(5).unwrap_or_default(),
+                        breadcrumb: row.get(6).unwrap_or_default(),
+                        page_num: row.get(7).ok(),
+                        content: row.get(8).unwrap_or_default(),
+                        table_data: row.get(9).ok(),
+                        status: row.get(10).unwrap_or_default(),
+                        references: Vec::new(),
+                    });
+                }
+            }
+        }
+
+        None
     }
 
     /// Retrieve summary statistics with status breakdown

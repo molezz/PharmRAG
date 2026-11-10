@@ -24,15 +24,15 @@ Use `pharmrag` to query authoritative pharmaceutical regulations and GxP guideli
 ### 1. Standard Query
 Query via CLI using `--json` to receive structured, verifiable evidence for downstream agent reasoning:
 ```bash
-pharmrag query "<question or keywords>" --limit 3 --min-score 0.40 --json
-```
+# Basic query with Multi-Hop evidence graph
+pharmrag search "<question or keywords>" --limit 3 --hop --json
 
-Or run through standard search:
-```bash
-pharmrag search "<question or keywords>" --hybrid --limit 3 --min-score 0.40 --json
+# Hybrid search with dense vectors and multi-hop
+pharmrag search "<question or keywords>" --hybrid --limit 3 --min-score 0.40 --hop --json
 ```
 
 ### 2. Common CLI Options
+- `--hop`: **Enable SAG2-style Multi-Hop reference expansion**. Automatically resolves cross-regulation references (e.g., Pharmacopoeia, ICH, and internal Q&A citations) into a verified evidence chain.
 - `--limit <N>`: Return top N clauses (default: 3, recommended: 3-5).
 - `--min-score <F>`: RRF cutoff score (default: 0.40). Lower to 0.30 for broad exploratory searches; pass 0.0 to disable.
 - `--only-effective`: Strict filter to exclude draft consultation papers (`draft`), retaining only effective and interim trial guidelines.

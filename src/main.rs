@@ -64,6 +64,9 @@ enum Commands {
         /// Output formatted JSON instead of human-readable text
         #[arg(long)]
         json: bool,
+        /// Enable Multi-Hop cross-regulation reference expansion (SAG2 evidence chain)
+        #[arg(long)]
+        hop: bool,
     },
     /// Watch a directory for auto-ingestion when files are added or updated
     Watch {
@@ -134,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("\n✨ 语义向量嵌入生成完毕！");
             }
         }
-        Commands::Search { query, limit, hybrid, model_dir, status, only_effective, min_score, exclude_toc, json } => {
+        Commands::Search { query, limit, hybrid, model_dir, status, only_effective, min_score, exclude_toc, json, hop } => {
             let db = Database::open(&db_path)?;
             let status_filter = if only_effective {
                 Some("effective")
@@ -161,6 +164,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             results.truncate(limit);
+
+            if hop {
+                results = db.expand_multi_hop(results)?;
+            }
+
             let elapsed = start.elapsed();
 
             if json {
@@ -194,6 +202,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     
                     if res.clause.status == "draft" {
                         println!("{}", "⚠️ 提示：该条款来自征求意见稿，正式申报与GMP合规请核对现行版指导原则。".red());
+                    }
+
+                    if !res.clause.references.is_empty() {
+                        let ref_tags: Vec<String> = res.clause.references.iter().map(|r| format!("[{}: {}]", r.ref_type, r.target_title)).collect();
+                        println!("🔗 关联引用条目: {}", ref_tags.join(", ").blue());
+                    }
+
+                    if !res.hop_references.is_empty() {
+                        for (hop_idx, hop) in res.hop_references.iter().enumerate() {
+                            if let Some(matched) = &hop.matched_clause {
+                                println!("   ↳ 🔀 [Multi-Hop 关联证据 #{}] {} ({})", hop_idx + 1, matched.breadcrumb.cyan(), hop.reference.raw_mention.yellow());
+                                println!("      {}", matched.content.lines().take(3).collect::<Vec<_>>().join("\n      "));
+                                if matched.content.lines().count() > 3 {
+                                    println!("      ...");
+                                }
+                            }
+                        }
                     }
 
                     println!("\n{}", res.clause.content);

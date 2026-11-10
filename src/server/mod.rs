@@ -21,6 +21,7 @@ pub struct SearchParams {
     pub q: String,
     pub limit: Option<usize>,
     pub status: Option<String>,
+    pub hop: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -114,11 +115,17 @@ async fn search_handler(
     let limit = params.limit.unwrap_or(10);
     let q = params.q.clone();
     let status_filter = params.status.clone();
+    let hop = params.hop.unwrap_or(false);
     let db_arc = state.db.clone();
 
     let results = tokio::task::spawn_blocking(move || {
         let db = db_arc.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-        db.search(&q, limit, status_filter.as_deref()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        let res = db.search(&q, limit, status_filter.as_deref()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if hop {
+            db.expand_multi_hop(res).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+        } else {
+            Ok(res)
+        }
     })
     .await
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
@@ -171,12 +178,13 @@ async fn mcp_handler(
                 "tools": [
                     {
                         "name": "search_regulations",
-                        "description": "Search biopharma regulations, CDE/FDA guidelines, and company SOPs with exact clause breadcrumbs",
+                        "description": "Search biopharma regulations, CDE/FDA guidelines, and company SOPs with exact clause breadcrumbs and multi-hop cross references",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
                                 "query": { "type": "string", "description": "Search keyword or regulation query (e.g. '无菌检查', 'CAR-T 药学变更')" },
-                                "limit": { "type": "integer", "description": "Max number of clauses to return (default 5)" }
+                                "limit": { "type": "integer", "description": "Max number of clauses to return (default 5)" },
+                                "hop": { "type": "boolean", "description": "Enable Multi-Hop cross-regulation reference expansion (default true)" }
                             },
                             "required": ["query"]
                         }
@@ -195,11 +203,20 @@ async fn mcp_handler(
                 .and_then(|a| a.get("limit"))
                 .and_then(|l| l.as_u64())
                 .unwrap_or(5) as usize;
+            let hop = params.get("arguments")
+                .and_then(|a| a.get("hop"))
+                .and_then(|h| h.as_bool())
+                .unwrap_or(true);
 
             let db_arc = state.db.clone();
             let results = tokio::task::spawn_blocking(move || {
                 let db = db_arc.lock().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-                db.search(&query, limit, None).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+                let res = db.search(&query, limit, None).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+                if hop {
+                    db.expand_multi_hop(res).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+                } else {
+                    Ok(res)
+                }
             })
             .await
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
@@ -212,13 +229,36 @@ async fn mcp_handler(
                     _ => "🟢【现行有效】",
                 };
 
-                format!(
-                    "【法规效力】: {}\n【出处层级】: {}\n【页码】: {}\n【条款内容】:\n{}\n---",
+                let mut item_str = format!(
+                    "【法规效力】: {}\n【出处层级】: {}\n【页码】: {}\n【条款内容】:\n{}",
                     status_badge,
                     r.clause.breadcrumb,
                     r.clause.page_num.map_or("未知".to_string(), |p| p.to_string()),
                     r.clause.content
-                )
+                );
+
+                if !r.hop_references.is_empty() {
+                    item_str.push_str("\n【🔗 Multi-Hop 关联法规/条款证据】:");
+                    for hop_target in &r.hop_references {
+                        if let Some(m) = &hop_target.matched_clause {
+                            item_str.push_str(&format!(
+                                "\n  ↳ 关联引用: {} -> [{}] (第{}页)\n    摘要: {}",
+                                hop_target.reference.raw_mention,
+                                m.breadcrumb,
+                                m.page_num.map_or("未知".to_string(), |p| p.to_string()),
+                                m.content.chars().take(150).collect::<String>()
+                            ));
+                        } else {
+                            item_str.push_str(&format!(
+                                "\n  ↳ 关联引用: {} (未在当前本地库收录全文)",
+                                hop_target.reference.raw_mention
+                            ));
+                        }
+                    }
+                }
+
+                item_str.push_str("\n---");
+                item_str
             }).collect();
 
             Ok(Json(serde_json::json!({

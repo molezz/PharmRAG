@@ -13,6 +13,15 @@ pub struct Clause {
     pub content: String,
     pub table_data: Option<String>,
     pub status: String, // "effective", "trial", "draft", "superseded"
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<ClauseReference>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ClauseReference {
+    pub ref_type: String,     // "external_doc", "internal_clause", "pharmacopoeia", "guideline"
+    pub target_title: String, // e.g. "中国药典", "问题 6.(2)", "ICH Q5D"
+    pub raw_mention: String,  // e.g. "《中国药典》现行版", "见问题 6、（2）"
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +43,15 @@ pub struct SearchResult {
     pub semantic_score: Option<f64>,
     pub fts_score: Option<f64>,
     pub rerank_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hop_references: Vec<HopReferenceTarget>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HopReferenceTarget {
+    pub reference: ClauseReference,
+    pub matched_clause: Option<Clause>,
+}
+
 
 

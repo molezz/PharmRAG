@@ -1,5 +1,5 @@
 use regex::Regex;
-use super::ast::Clause;
+use super::ast::{Clause, ClauseReference};
 
 pub struct RegulatoryParser {
     re_chapter: Regex,
@@ -10,6 +10,10 @@ pub struct RegulatoryParser {
     re_toc_dots_page: Regex,
     re_toc_entry: Regex,
     re_toc_title: Regex,
+    // Cross-regulation & clause reference patterns for multi-hop graph
+    re_ref_book: Regex,
+    re_ref_internal: Regex,
+    re_ref_ich: Regex,
 }
 
 impl Default for RegulatoryParser {
@@ -37,8 +41,6 @@ impl RegulatoryParser {
             re_noise: Regex::new(r"(?i)^(FDA CBER OTP Town Hall Series|Contains Nonbinding Recommendations|Guidance for Industry|Food and Drug Administration|April 25, 2023|June 8, 2023)$").unwrap(),
 
             // 目录过滤特征：真正的点导线（连续4个及以上的半角点、全角点 U+FF0E、下划线、中间点）
-            // 注意：中文省略号（……或………）常在条款正文中出现，不能仅凭出现省略号就判为 TOC。
-            // 目录中的省略号/点导线必须有引导至页码的特征，或至少连续5个以上的省略号字符
             re_toc_dots: Regex::new(r"(\.{4,}|．{4,}|(?:\.\s*){4,}|(?:．\s*){4,}|·{4,}|_{4,}|…{5,})").unwrap(),
             // 点导线结尾接页码（至少2个省略号或3个点导线紧跟页码，排除常规正文小数如 0.5）
             re_toc_dots_page: Regex::new(r"(\.{3,}|．{3,}|…{2,}|(?:\.\s*){3,}|(?:．\s*){3,}|·{3,})\s*(\d+|[ivxldcm]+)\s*$").unwrap(),
@@ -46,7 +48,72 @@ impl RegulatoryParser {
             re_toc_entry: Regex::new(r"(?is)^(第[一二三四五六七八九十百]+[章节条]|[一二三四五六七八九十]+、|Q\d+[\.:\s]|Question\s*\d+|[IVXLCDM]+\.\s+|[A-Z]\.\s+|\d+[\.、]).+?(\.{3,}|．{3,}|…{2,}|(?:\.\s*){3,}|(?:．\s*){3,}|·{3,})\s*(\d+|[ivxldcm]+)\s*$").unwrap(),
             // 目录标题标记
             re_toc_title: Regex::new(r"(?i)^(-{3,}\s*)?(目\s*录|table of contents|contents)\s*(-{3,})?$").unwrap(),
+
+            // 书名号法规/标准引用: e.g. 《中国药典》现行版、《药品生产质量管理规范》
+            re_ref_book: Regex::new(r"《([^》]{2,40})》").unwrap(),
+            // 内部条款/问答引用: e.g. "见问题 6、（2）", "参考问题 1、3", "参见第十条", "见第四章"
+            re_ref_internal: Regex::new(r"(?:见|参见|参考|依据)(?:本文)?(?:本指导原则)?(问题\s*\d+(?:[、,，]\s*\d+)*(?:[、（(（]\d+[)）］])?|第[一二三四五六七八九十百\d]+[章节条])").unwrap(),
+            // ICH / USP / EP / FDA 指南代号引用: e.g. ICH Q5D, ICH Q6B, USP <1046>, 21 CFR Part 211
+            re_ref_ich: Regex::new(r"(?i)\b(ICH\s+[A-Z]\d+[A-Z]?|USP\s*<[0-9]+>|21\s*CFR\s*Part\s*\d+|EP\s*\d+\.\d+)\b").unwrap(),
         }
+    }
+
+    /// Extract cross-regulation and internal clause references from text
+    pub fn extract_references(&self, text: &str) -> Vec<ClauseReference> {
+        let mut refs = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        // 1. 书名号引用
+        for caps in self.re_ref_book.captures_iter(text) {
+            if let Some(target) = caps.get(1) {
+                let title = target.as_str().trim().to_string();
+                let raw = caps.get(0).map_or("", |m| m.as_str()).to_string();
+                let ref_type = if title.contains("药典") {
+                    "pharmacopoeia".to_string()
+                } else {
+                    "guideline".to_string()
+                };
+                if seen.insert(format!("{}:{}", ref_type, title)) {
+                    refs.push(ClauseReference {
+                        ref_type,
+                        target_title: title,
+                        raw_mention: raw,
+                    });
+                }
+            }
+        }
+
+        // 2. 内部条款/问答引用
+        for caps in self.re_ref_internal.captures_iter(text) {
+            if let Some(target) = caps.get(1) {
+                let target_clean = target.as_str().trim().replace(' ', "");
+                let raw = caps.get(0).map_or("", |m| m.as_str()).to_string();
+                if seen.insert(format!("internal_clause:{}", target_clean)) {
+                    refs.push(ClauseReference {
+                        ref_type: "internal_clause".to_string(),
+                        target_title: target_clean,
+                        raw_mention: raw,
+                    });
+                }
+            }
+        }
+
+        // 3. 国际标准代号 (ICH/USP/CFR)
+        for caps in self.re_ref_ich.captures_iter(text) {
+            if let Some(target) = caps.get(1) {
+                let target_clean = target.as_str().trim().to_uppercase();
+                let raw = caps.get(0).map_or("", |m| m.as_str()).to_string();
+                if seen.insert(format!("international_standard:{}", target_clean)) {
+                    refs.push(ClauseReference {
+                        ref_type: "international_standard".to_string(),
+                        target_title: target_clean,
+                        raw_mention: raw,
+                    });
+                }
+            }
+        }
+
+        refs
     }
 
     /// Check if a text chunk is a Table of Contents entry or catalogue title
@@ -134,6 +201,7 @@ impl RegulatoryParser {
                         parts.push(article.to_string());
                     }
                     let breadcrumb = parts.join(" > ");
+                    let references = self.extract_references(&content);
 
                     clauses.push(Clause {
                         id: None,
@@ -147,6 +215,7 @@ impl RegulatoryParser {
                         content,
                         table_data: None,
                         status: status.clone(),
+                        references,
                     });
                 } else {
                     tracing::debug!("Document '{}': discarding empty header duplicate: {}", doc_title, content);
@@ -273,6 +342,7 @@ impl RegulatoryParser {
             for (idx, para) in raw_text.split("\n\n").enumerate() {
                 let trimmed = para.trim();
                 if !trimmed.is_empty() {
+                    let references = self.extract_references(trimmed);
                     clauses.push(Clause {
                         id: None,
                         doc_id: None,
@@ -285,6 +355,7 @@ impl RegulatoryParser {
                         content: trimmed.to_string(),
                         table_data: None,
                         status: status.clone(),
+                        references,
                     });
                 }
             }
